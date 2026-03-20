@@ -1,0 +1,29 @@
+{
+  "standard_user": {
+    "username": "testuser@example.com",
+    "password": "Test@1234",
+    "role": "user",
+    "firstName": "Test",
+    "lastName": "User"
+  },
+  "admin_user": {
+    "username": "admin@example.com",
+    "password": "Admin@1234",
+    "role": "admin",
+    "firstName": "Admin",
+    "lastName": "User"
+  },
+  "readonly_user": {
+    "username": "readonly@example.com",
+    "password": "ReadOnly@1234",
+    "role": "viewer",
+    "firstName": "Read",
+    "lastName": "Only"
+  },
+  "locked_user": {
+    "username": "locked@example.com",
+    "password": "Locked@1234",
+    "role": "user",
+    "status": "locked"
+  }
+}

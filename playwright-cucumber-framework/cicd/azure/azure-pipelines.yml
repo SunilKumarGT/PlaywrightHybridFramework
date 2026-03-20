@@ -1,0 +1,304 @@
+# ─── Azure DevOps Pipeline ──────────────────────────────────────────────────
+# Playwright + Cucumber + AI Testing Framework
+# File: cicd/azure/azure-pipelines.yml
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+      - hotfix/*
+  paths:
+    exclude:
+      - '**/*.md'
+      - 'docs/**'
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+schedules:
+  - cron: '30 20 * * *'    # 2 AM IST
+    displayName: Nightly Regression
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: testSuite
+    displayName: Test Suite
+    type: string
+    default: smoke
+    values: [smoke, all, ui, api, ai, regression]
+
+  - name: environment
+    displayName: Environment
+    type: string
+    default: staging
+    values: [staging, production, local]
+
+  - name: browser
+    displayName: Browser
+    type: string
+    default: chromium
+    values: [chromium, firefox, webkit]
+
+variables:
+  nodeVersion: '20.x'
+  ENV: ${{ parameters.environment }}
+  BROWSER: ${{ parameters.browser }}
+  HEADLESS: 'true'
+  npm_config_cache: $(Pipeline.Workspace)/.npm
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # ─── Stage 1: Quality ──────────────────────────────────────────────────────
+  - stage: Quality
+    displayName: '🔍 Code Quality'
+    jobs:
+      - job: TypeCheckAndLint
+        displayName: TypeScript + ESLint
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - task: Cache@2
+            inputs:
+              key: '"npm" | "$(Agent.OS)" | package-lock.json'
+              restoreKeys: '"npm" | "$(Agent.OS)"'
+              path: $(npm_config_cache)
+
+          - script: npm ci
+            displayName: Install dependencies
+
+          - script: npm run type-check
+            displayName: TypeScript type-check
+
+          - script: npm run lint
+            displayName: ESLint
+
+  # ─── Stage 2: Smoke ────────────────────────────────────────────────────────
+  - stage: Smoke
+    displayName: '💨 Smoke Tests'
+    dependsOn: Quality
+    jobs:
+      - job: SmokeTests
+        displayName: Smoke Tests
+        timeoutInMinutes: 20
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - task: Cache@2
+            inputs:
+              key: '"npm" | "$(Agent.OS)" | package-lock.json'
+              restoreKeys: '"npm" | "$(Agent.OS)"'
+              path: $(npm_config_cache)
+
+          - script: npm ci
+            displayName: Install dependencies
+
+          - script: npx playwright install --with-deps chromium
+            displayName: Install Playwright
+
+          - script: npm run test:smoke
+            displayName: Run Smoke Tests
+            env:
+              BASE_URL: $(BASE_URL)
+              API_BASE_URL: $(API_BASE_URL)
+              TEST_USERNAME: $(TEST_USERNAME)
+              TEST_PASSWORD: $(TEST_PASSWORD)
+              API_KEY: $(API_KEY)
+              AUTH_TOKEN: $(AUTH_TOKEN)
+              ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+              HEADLESS: $(HEADLESS)
+              ENV: $(ENV)
+
+          - task: PublishTestResults@2
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'reports/*.xml'
+              testRunTitle: 'Smoke Tests'
+
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: reports/
+              artifact: smoke-reports-$(Build.BuildNumber)
+
+  # ─── Stage 3: Tests ────────────────────────────────────────────────────────
+  - stage: Tests
+    displayName: '🧪 Test Suites'
+    dependsOn: Smoke
+    jobs:
+      # UI Tests (parallel per browser)
+      - job: UITests
+        displayName: '🌐 UI Tests'
+        condition: |
+          and(
+            succeeded(),
+            or(
+              eq('${{ parameters.testSuite }}', 'ui'),
+              eq('${{ parameters.testSuite }}', 'all'),
+              eq('${{ parameters.testSuite }}', 'regression'),
+              eq(variables['Build.Reason'], 'Schedule')
+            )
+          )
+        timeoutInMinutes: 45
+        strategy:
+          matrix:
+            chromium:
+              BROWSER: chromium
+            firefox:
+              BROWSER: firefox
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - script: npm ci
+            displayName: Install dependencies
+
+          - script: npx playwright install --with-deps $(BROWSER)
+            displayName: Install Playwright
+
+          - script: npm run test:ui
+            displayName: Run UI Tests
+            env:
+              BASE_URL: $(BASE_URL)
+              TEST_USERNAME: $(TEST_USERNAME)
+              TEST_PASSWORD: $(TEST_PASSWORD)
+              BROWSER: $(BROWSER)
+              HEADLESS: $(HEADLESS)
+              SCREENSHOT_ON_FAIL: 'true'
+              VIDEO_ON_FAIL: 'true'
+              TRACE_ON_FAIL: 'true'
+              ENV: $(ENV)
+
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: reports/
+              artifact: ui-reports-$(BROWSER)-$(Build.BuildNumber)
+
+      # API Tests
+      - job: APITests
+        displayName: '🔌 API Tests'
+        condition: |
+          and(
+            succeeded(),
+            or(
+              eq('${{ parameters.testSuite }}', 'api'),
+              eq('${{ parameters.testSuite }}', 'all'),
+              eq('${{ parameters.testSuite }}', 'regression'),
+              eq(variables['Build.Reason'], 'Schedule')
+            )
+          )
+        timeoutInMinutes: 30
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - script: npm ci
+            displayName: Install dependencies
+
+          - script: npm run test:api
+            displayName: Run API Tests
+            env:
+              API_BASE_URL: $(API_BASE_URL)
+              API_KEY: $(API_KEY)
+              AUTH_TOKEN: $(AUTH_TOKEN)
+              ENV: $(ENV)
+
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: reports/
+              artifact: api-reports-$(Build.BuildNumber)
+
+      # AI Tests
+      - job: AITests
+        displayName: '🤖 AI Tests'
+        condition: |
+          and(
+            succeeded(),
+            or(
+              eq('${{ parameters.testSuite }}', 'ai'),
+              eq('${{ parameters.testSuite }}', 'all'),
+              eq(variables['Build.Reason'], 'Schedule')
+            )
+          )
+        timeoutInMinutes: 40
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - script: npm ci
+            displayName: Install dependencies
+
+          - script: npx playwright install --with-deps chromium
+            displayName: Install Playwright
+
+          - script: npm run test:ai
+            displayName: Run AI Tests
+            env:
+              BASE_URL: $(BASE_URL)
+              API_BASE_URL: $(API_BASE_URL)
+              ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+              TEST_USERNAME: $(TEST_USERNAME)
+              TEST_PASSWORD: $(TEST_PASSWORD)
+              HEADLESS: $(HEADLESS)
+              ENV: $(ENV)
+
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: reports/
+              artifact: ai-reports-$(Build.BuildNumber)
+
+  # ─── Stage 4: Report ───────────────────────────────────────────────────────
+  - stage: Report
+    displayName: '📊 Publish Report'
+    dependsOn: Tests
+    condition: always()
+    jobs:
+      - job: PublishReport
+        displayName: Generate & Publish Report
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              path: all-reports/
+
+          - script: npm ci
+            displayName: Install dependencies
+
+          - script: |
+              mkdir -p reports
+              find all-reports -name 'cucumber-report.json' | head -1 | xargs -I{} cp {} reports/ 2>/dev/null || true
+              npm run report || true
+            displayName: Generate summary report
+
+          - task: PublishHtmlReport@1
+            inputs:
+              reportDir: reports
+              tabName: 'Test Report'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: reports/summary-report.html
+              artifact: final-report-$(Build.BuildNumber)

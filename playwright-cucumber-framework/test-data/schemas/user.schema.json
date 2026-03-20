@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "User",
+  "type": "object",
+  "required": ["id", "email", "firstName", "lastName", "role", "createdAt"],
+  "properties": {
+    "id":        { "type": "string",  "minLength": 1 },
+    "email":     { "type": "string",  "format": "email" },
+    "firstName": { "type": "string",  "minLength": 1 },
+    "lastName":  { "type": "string",  "minLength": 1 },
+    "role":      { "type": "string",  "enum": ["user", "admin", "viewer", "moderator"] },
+    "status":    { "type": "string",  "enum": ["active", "inactive", "locked"] },
+    "createdAt": { "type": "string",  "format": "date-time" },
+    "updatedAt": { "type": "string",  "format": "date-time" },
+    "avatar":    { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

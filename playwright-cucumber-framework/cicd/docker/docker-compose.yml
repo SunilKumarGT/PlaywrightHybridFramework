@@ -1,0 +1,92 @@
+# ─── Docker Compose ───────────────────────────────────────────────────────────
+# Local and CI execution via Docker
+# Usage:
+#   docker-compose up test-smoke            # Run smoke tests
+#   docker-compose up test-ui               # Run UI tests
+#   docker-compose up test-api              # Run API tests
+#   docker-compose up test-all              # Run all tests
+#   docker-compose --profile ci up          # CI mode (all parallel)
+
+version: '3.9'
+
+x-common-env: &common-env
+  BASE_URL: ${BASE_URL:-https://staging.example.com}
+  API_BASE_URL: ${API_BASE_URL:-https://api-staging.example.com}
+  TEST_USERNAME: ${TEST_USERNAME:-testuser@example.com}
+  TEST_PASSWORD: ${TEST_PASSWORD:-Test@1234}
+  API_KEY: ${API_KEY:-}
+  AUTH_TOKEN: ${AUTH_TOKEN:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ENV: ${ENV:-staging}
+  HEADLESS: ${HEADLESS:-true}
+  SCREENSHOT_ON_FAIL: 'true'
+  VIDEO_ON_FAIL: 'true'
+  TRACE_ON_FAIL: 'true'
+
+x-common-volumes: &common-volumes
+  - ./reports:/app/reports
+  - ./test-data:/app/test-data:ro
+
+x-common-service: &common-service
+  build:
+    context: .
+    dockerfile: cicd/docker/Dockerfile
+  volumes: *common-volumes
+  environment: *common-env
+
+services:
+  # ─── Smoke Tests ─────────────────────────────────────────────────────────────
+  test-smoke:
+    <<: *common-service
+    container_name: test-smoke
+    command: npm run test:smoke
+    environment:
+      <<: *common-env
+      BROWSER: chromium
+
+  # ─── UI Tests ────────────────────────────────────────────────────────────────
+  test-ui:
+    <<: *common-service
+    container_name: test-ui
+    command: npm run test:ui
+    environment:
+      <<: *common-env
+      BROWSER: ${BROWSER:-chromium}
+
+  test-ui-firefox:
+    <<: *common-service
+    container_name: test-ui-firefox
+    command: npm run test:ui
+    environment:
+      <<: *common-env
+      BROWSER: firefox
+    profiles: [full, cross-browser]
+
+  # ─── API Tests ───────────────────────────────────────────────────────────────
+  test-api:
+    <<: *common-service
+    container_name: test-api
+    command: npm run test:api
+
+  # ─── AI Tests ────────────────────────────────────────────────────────────────
+  test-ai:
+    <<: *common-service
+    container_name: test-ai
+    command: npm run test:ai
+    profiles: [ai, full]
+
+  # ─── Full Regression (all parallel) ─────────────────────────────────────────
+  test-all:
+    <<: *common-service
+    container_name: test-all
+    command: npm run test:parallel
+    profiles: [full, ci]
+
+  # ─── Report Generator ────────────────────────────────────────────────────────
+  report:
+    <<: *common-service
+    container_name: report-generator
+    command: npm run report
+    depends_on:
+      - test-smoke
+    profiles: [report]

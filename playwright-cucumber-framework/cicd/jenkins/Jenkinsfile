@@ -1,0 +1,263 @@
+// ─── Jenkins Declarative Pipeline ───────────────────────────────────────────
+// Playwright + Cucumber + AI Testing Framework
+// File: cicd/jenkins/Jenkinsfile
+
+pipeline {
+    agent {
+        docker {
+            image 'mcr.microsoft.com/playwright:v1.41.0-jammy'
+            args '--ipc=host -u root'
+        }
+    }
+
+    parameters {
+        choice(
+            name: 'TEST_SUITE',
+            choices: ['smoke', 'all', 'ui', 'api', 'ai', 'regression'],
+            description: 'Select which test suite to run'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['staging', 'local', 'production'],
+            description: 'Target environment'
+        )
+        choice(
+            name: 'BROWSER',
+            choices: ['chromium', 'firefox', 'webkit'],
+            description: 'Browser for UI tests'
+        )
+        booleanParam(
+            name: 'PARALLEL',
+            defaultValue: true,
+            description: 'Run tests in parallel'
+        )
+    }
+
+    environment {
+        NODE_VERSION       = '20'
+        ENV                = "${params.ENVIRONMENT}"
+        BROWSER            = "${params.BROWSER}"
+        HEADLESS           = 'true'
+        SCREENSHOT_ON_FAIL = 'true'
+        VIDEO_ON_FAIL      = 'true'
+        TRACE_ON_FAIL      = 'true'
+
+        // Credentials stored in Jenkins Credentials Store
+        BASE_URL           = credentials('BASE_URL')
+        API_BASE_URL       = credentials('API_BASE_URL')
+        TEST_USERNAME      = credentials('TEST_USERNAME')
+        TEST_PASSWORD      = credentials('TEST_PASSWORD')
+        API_KEY            = credentials('API_KEY')
+        AUTH_TOKEN         = credentials('AUTH_TOKEN')
+        ANTHROPIC_API_KEY  = credentials('ANTHROPIC_API_KEY')
+        SLACK_WEBHOOK_URL  = credentials('SLACK_WEBHOOK_URL')
+    }
+
+    options {
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        disableConcurrentBuilds()
+        timestamps()
+        ansiColor('xterm')
+    }
+
+    triggers {
+        // Nightly regression at 1:00 AM
+        cron('0 1 * * *')
+        // Poll SCM every 5 minutes (use webhooks in production)
+        pollSCM('H/5 * * * *')
+    }
+
+    stages {
+        // ─── Checkout ──────────────────────────────────────────────────────────
+        stage('🔖 Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_MSG = sh(
+                        script: 'git log -1 --pretty=%B',
+                        returnStdout: true
+                    ).trim()
+                    echo "Commit: ${env.GIT_COMMIT_MSG}"
+                }
+            }
+        }
+
+        // ─── Install Dependencies ─────────────────────────────────────────────
+        stage('📦 Install') {
+            steps {
+                sh '''
+                    node --version
+                    npm --version
+                    npm ci
+                    npx playwright install --with-deps
+                '''
+            }
+        }
+
+        // ─── Code Quality ─────────────────────────────────────────────────────
+        stage('🔍 Quality') {
+            parallel {
+                stage('TypeScript') {
+                    steps {
+                        sh 'npm run type-check'
+                    }
+                }
+                stage('ESLint') {
+                    steps {
+                        sh 'npm run lint'
+                    }
+                }
+            }
+        }
+
+        // ─── Smoke Tests ──────────────────────────────────────────────────────
+        stage('💨 Smoke Tests') {
+            steps {
+                sh 'npm run test:smoke'
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: false,
+                        keepAll: true,
+                        reportDir: 'reports',
+                        reportFiles: 'cucumber-report.html',
+                        reportName: 'Smoke Test Report'
+                    ])
+                    archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ─── Main Test Suites ─────────────────────────────────────────────────
+        stage('🧪 Test Suites') {
+            parallel {
+                stage('🌐 UI Tests') {
+                    when {
+                        expression {
+                            params.TEST_SUITE in ['all', 'ui', 'regression'] ||
+                            env.BRANCH_NAME in ['main', 'develop']
+                        }
+                    }
+                    steps {
+                        sh 'npm run test:ui'
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/screenshots/**,reports/videos/**,reports/traces/**',
+                                             allowEmptyArchive: true
+                        }
+                    }
+                }
+
+                stage('🔌 API Tests') {
+                    when {
+                        expression {
+                            params.TEST_SUITE in ['all', 'api', 'regression'] ||
+                            env.BRANCH_NAME in ['main', 'develop']
+                        }
+                    }
+                    steps {
+                        sh 'npm run test:api'
+                    }
+                }
+
+                stage('🤖 AI Tests') {
+                    when {
+                        expression {
+                            params.TEST_SUITE in ['all', 'ai'] ||
+                            env.BRANCH_NAME == 'main'
+                        }
+                    }
+                    steps {
+                        sh 'npm run test:ai'
+                    }
+                }
+            }
+        }
+
+        // ─── Generate Report ──────────────────────────────────────────────────
+        stage('📊 Report') {
+            steps {
+                sh 'npm run report || true'
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'reports',
+                        reportFiles: 'summary-report.html',
+                        reportName: 'Test Execution Report'
+                    ])
+
+                    cucumber(
+                        fileIncludePattern: 'reports/cucumber-report.json',
+                        jsonReportDirectory: 'reports',
+                        reportTitle: 'Cucumber Test Results',
+                        buildStatus: 'UNSTABLE'
+                    )
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+            cleanWs()
+        }
+
+        success {
+            script {
+                if (env.SLACK_WEBHOOK_URL) {
+                    slackSend(
+                        color: 'good',
+                        message: "✅ Tests Passed: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n${env.BUILD_URL}",
+                        webhookUrl: env.SLACK_WEBHOOK_URL
+                    )
+                }
+            }
+        }
+
+        failure {
+            script {
+                if (env.SLACK_WEBHOOK_URL) {
+                    slackSend(
+                        color: 'danger',
+                        message: "❌ Tests Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n${env.BUILD_URL}",
+                        webhookUrl: env.SLACK_WEBHOOK_URL
+                    )
+                }
+                emailext(
+                    subject: "❌ Test Failure: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+                        <h2>Test Execution Failed</h2>
+                        <p><b>Job:</b> ${env.JOB_NAME}</p>
+                        <p><b>Build:</b> #${env.BUILD_NUMBER}</p>
+                        <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                        <p><b>Branch:</b> ${env.BRANCH_NAME}</p>
+                        <p><a href="${env.BUILD_URL}">View Build</a></p>
+                    """,
+                    mimeType: 'text/html',
+                    to: '${DEFAULT_RECIPIENTS}'
+                )
+            }
+        }
+
+        unstable {
+            script {
+                if (env.SLACK_WEBHOOK_URL) {
+                    slackSend(
+                        color: 'warning',
+                        message: "⚠️ Tests Unstable: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n${env.BUILD_URL}",
+                        webhookUrl: env.SLACK_WEBHOOK_URL
+                    )
+                }
+            }
+        }
+    }
+}

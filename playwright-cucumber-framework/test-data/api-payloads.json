@@ -1,0 +1,51 @@
+{
+  "createUser": {
+    "valid": {
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john.doe@example.com",
+      "role": "user"
+    },
+    "missingEmail": {
+      "firstName": "John",
+      "lastName": "Doe"
+    },
+    "invalidEmail": {
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "not-an-email"
+    },
+    "duplicateEmail": {
+      "firstName": "Duplicate",
+      "lastName": "User",
+      "email": "testuser@example.com"
+    }
+  },
+  "createProduct": {
+    "valid": {
+      "name": "Test Product",
+      "price": 49.99,
+      "description": "A high-quality test product",
+      "category": "electronics",
+      "stock": 100
+    },
+    "minimalValid": {
+      "name": "Minimal Product",
+      "price": 0.01
+    },
+    "invalidPrice": {
+      "name": "Bad Product",
+      "price": -5.00
+    }
+  },
+  "loginPayload": {
+    "valid": {
+      "email": "testuser@example.com",
+      "password": "Test@1234"
+    },
+    "invalid": {
+      "email": "wrong@example.com",
+      "password": "wrongpassword"
+    }
+  }
+}
